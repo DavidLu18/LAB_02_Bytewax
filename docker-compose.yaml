@@ -102,7 +102,7 @@ services:
   step0_dnse_producer:
     <<: *pipeline-common
     container_name: step0_dnse_producer
-    command: ["python3", "binance_ws_to_sqlite.py"]
+    command: ["python3", "message_to_kafka.py"]
     volumes:
       - ./messages.json:/app/messages.json:ro
     depends_on:
@@ -113,7 +113,7 @@ services:
   step1_transform_dnse:
     <<: *pipeline-common
     container_name: step1_transform
-    command: ["python3", "-m", "bytewax.run", "pipelines.transform_binance_ohlc_bw"]
+    command: ["python3", "-m", "bytewax.run", "pipelines.transform_binance_dnse_bw"]
     depends_on:
       redpanda:
         condition: service_healthy
