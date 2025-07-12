@@ -1,0 +1,142 @@
+# Complete DNSE Data Pipeline - Docker Compose
+version: "3.8"
+
+# Common configuration for pipeline services
+x-pipeline-common: &pipeline-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  environment:
+    # PostgreSQL Database
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: 5432
+    POSTGRES_USER: david
+    POSTGRES_PASSWORD: Omen123456789
+    POSTGRES_DB: DavidDB
+    # Kafka Configuration
+    KAFKA_SERVERS: redpanda:9092
+    # Runtime
+    RUN_ENV: development
+    TZ: Asia/Ho_Chi_Minh
+  networks:
+    - dnse-pipeline
+  restart: unless-stopped
+
+services:
+  # 🗄️ PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres_db
+    environment:
+      POSTGRES_USER: david
+      POSTGRES_PASSWORD: Omen123456789
+      POSTGRES_DB: DavidDB
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./setup_postgresql.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - dnse-pipeline
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U david -d DavidDB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # 🚀 Redpanda (Kafka-compatible message broker)
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v23.3.3
+    container_name: redpanda_broker
+    command:
+      - redpanda start
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:18082
+      - --advertise-pandaproxy-addr internal://redpanda:8082,external://localhost:18082
+      - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:18081
+      - --rpc-addr redpanda:33145
+      - --advertise-rpc-addr redpanda:33145
+      - --smp 1
+      - --memory 1G
+      - --mode dev-container
+      - --default-log-level info
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    ports:
+      - "19092:19092"  # External Kafka access
+      - "8080:8080"    # Redpanda Console
+    networks:
+      - dnse-pipeline
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy'"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
+  # 🌐 Redpanda Console (Web UI for Kafka)
+  redpanda-console:
+    image: docker.redpanda.com/redpandadata/console:v2.4.5
+    container_name: redpanda_console
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+      KAFKA_SCHEMAREGISTRY_ENABLED: "false"
+      # Disable authentication
+      LOGIN_ENABLED: "false"
+      ENTERPRISE_FEATURES_ENABLED: "false"
+      CONFIG_FILEPATH: ""
+    ports:
+      - "8081:8080"
+    networks:
+      - dnse-pipeline
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ========== DNSE PIPELINE SERVICES ==========
+  
+  # 📊 STEP 0: messages.json → Kafka topic "dnse.raw"
+  step0_dnse_producer:
+    <<: *pipeline-common
+    container_name: step0_dnse_producer
+    command: ["python3", "binance_ws_to_sqlite.py"]
+    volumes:
+      - ./messages.json:/app/messages.json:ro
+    depends_on:
+      redpanda:
+        condition: service_healthy
+
+  # 🔄 STEP 1: Transform "dnse.raw" → "dnse.transform"
+  step1_transform_dnse:
+    <<: *pipeline-common
+    container_name: step1_transform
+    command: ["python3", "-m", "bytewax.run", "pipelines.transform_binance_ohlc_bw"]
+    depends_on:
+      redpanda:
+        condition: service_healthy
+
+  # 📥 STEP 2: Sink "dnse.transform" → PostgreSQL
+  step2_sink_to_db:
+    <<: *pipeline-common
+    container_name: step2_sink
+    command: ["python3", "-m", "bytewax.run", "cmd.sink_market_data_to_db_bw"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+
+# 💾 Persistent Storage
+volumes:
+  postgres_data:
+    driver: local
+  redpanda_data:
+    driver: local
+
+# 🔗 Network
+networks:
+  dnse-pipeline:
+    driver: bridge
