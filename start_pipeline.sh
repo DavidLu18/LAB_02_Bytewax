@@ -20,7 +20,7 @@ echo -e "${BLUE}========================================${NC}"
 # Function to display pipeline steps
 show_pipeline() {
     echo -e "\n${YELLOW}📊 Pipeline Architecture:${NC}"
-    echo -e "STEP 0: ${GREEN}messages.json${NC} → Kafka topic '${YELLOW}dnse.raw${NC}'"
+    echo -e "STEP 0: ${GREEN}messages.json${NC} → (DragonflyDB checksum) → Kafka topic '${YELLOW}dnse.raw${NC}'"
     echo -e "STEP 1: ${GREEN}Transform${NC} '${YELLOW}dnse.raw${NC}' → '${YELLOW}dnse.transform${NC}'"
     echo -e "STEP 2: ${GREEN}Sink${NC} '${YELLOW}dnse.transform${NC}' → ${YELLOW}PostgreSQL${NC}"
     echo -e "\n${BLUE}📋 Data Types:${NC}"
@@ -65,9 +65,9 @@ start_pipeline() {
     echo -e "${YELLOW}🔧 Building application...${NC}"
     docker-compose build
     
-    # Start infrastructure first (PostgreSQL, Kafka)
+    # Start infrastructure first (PostgreSQL, Kafka, DragonflyDB)
     echo -e "${YELLOW}🗄️ Starting infrastructure...${NC}"
-    docker-compose up -d postgres redpanda
+    docker-compose up -d postgres redpanda dragonfly
     
     # Wait for services to be healthy
     echo -e "${YELLOW}⏳ Waiting for services to be ready...${NC}"
@@ -89,6 +89,7 @@ show_status() {
     echo -e "\n${BLUE}🌐 Access Points:${NC}"
     echo -e "• PostgreSQL: ${YELLOW}localhost:5432${NC} (user: david, db: DavidDB)"
     echo -e "• Kafka: ${YELLOW}localhost:19092${NC}"
+    echo -e "• DragonflyDB: ${YELLOW}localhost:6379${NC} (Redis-compatible)"
     echo -e "• Redpanda Console: ${YELLOW}http://localhost:8080${NC}"
     
     echo -e "\n${BLUE}📋 Useful Commands:${NC}"
@@ -111,6 +112,7 @@ view_logs() {
     echo -e "• ${YELLOW}step1_transform${NC} - DNSE data transformer"
     echo -e "• ${YELLOW}step2_sink${NC} - PostgreSQL sink"
     echo -e "• ${YELLOW}postgres${NC} - Database"
+    echo -e "• ${YELLOW}dragonfly${NC} - DragonflyDB (checksum cache)"
     echo -e "• ${YELLOW}redpanda${NC} - Message broker"
     echo -e "• ${YELLOW}redpanda-console${NC} - Kafka web UI"
     
@@ -152,6 +154,12 @@ test_pipeline() {
     # Check database tables
     echo -e "\n${YELLOW}🗄️ Checking database tables...${NC}"
     docker exec -it postgres_db psql -U david -d DavidDB -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';" || echo "❌ Could not check database"
+    
+    # Check DragonflyDB connection and checksum data
+    echo -e "\n${YELLOW}🐉 Checking DragonflyDB status...${NC}"
+    docker exec dragonfly_db redis-cli ping || echo "❌ Could not ping DragonflyDB"
+    echo -e "\n${YELLOW}📊 Checking checksum count in DragonflyDB...${NC}"
+    docker exec dragonfly_db redis-cli SCARD "dnse:processed_checksums" || echo "❌ Could not check checksums"
     
     # Check data in topics
     echo -e "\n${YELLOW}📊 Checking data in dnse.raw topic (last 5 messages)...${NC}"
